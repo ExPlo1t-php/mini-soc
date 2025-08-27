@@ -1,0 +1,55 @@
+name: CI/CD Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  build-and-scan:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker registry
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin your.registry.com
+
+      - name: Build Docker image
+        run: |
+          docker build -t your.registry.com/yourapp:${{ github.sha }} .
+
+      - name: Scan image with Trivy
+        run: |
+          trivy image --exit-code 1 --severity CRITICAL,HIGH your.registry.com/yourapp:${{ github.sha }}
+
+  selenium-tests:
+    runs-on: self-hosted
+    needs: build-and-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Selenium tests
+        run: |
+          # Example: spin up temp container
+          docker run -d -p 8080:80 your.registry.com/yourapp:${{ github.sha }}
+          sleep 10
+          # Run Python Selenium tests
+          pip3 install -r tests/requirements.txt
+          python3 -m pytest tests/selenium
+          docker stop $(docker ps -q --filter ancestor=your.registry.com/yourapp:${{ github.sha }})
+
+  deploy:
+    runs-on: self-hosted
+    needs: selenium-tests
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy via Ansible
+        run: |
+          ansible-playbook -i ansible/inventory ansible/deploy.yml \
+            --extra-vars "image_tag=${{ github.sha }}"
